@@ -20,11 +20,9 @@ struct ImmersiveView: View {
             ImmersiveSystem.registerSystem()
             
             let material = PhysicallyBasedMaterial()
-            let videoPlaneMesh = MeshResource.generatePlane(width: 2.0, depth: 2.0)
+            let videoPlaneMesh = MeshResource.generatePlane(width: 1.0, depth: 1.0)
             let videoPlane = ModelEntity(mesh: videoPlaneMesh, materials: [material])
-            //videoPlane.components.set(GroundingShadowComponent(castsShadow: true))
             videoPlane.name = "video_plane"
-            videoPlane.orientation = simd_quatf(angle: 1.5708, axis: simd_float3(1,0,0))
             content.add(videoPlane)
         } update: { content in
             /*let sphere = content.entities.first(where: { entity in

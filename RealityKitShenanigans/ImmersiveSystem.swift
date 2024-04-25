@@ -16,24 +16,10 @@ let alignedUniformsSize = (MemoryLayout<Uniforms>.size + 0xFF) & -0x100
 let alignedPlaneUniformSize = (MemoryLayout<PlaneUniform>.size + 0xFF) & -0x100
 let maxBuffersInFlight = 3
 let maxPlanesDrawn = 512
-
-class DisplayLink: NSObject, ObservableObject {
-    @Published var frameDuration: CFTimeInterval = 0
-    @Published var frameChange: Bool = false
-    
-    static let sharedInstance: DisplayLink = DisplayLink()
-    
-    func createDisplayLink() {
-        let displaylink = CADisplayLink(target: self, selector: #selector(frame))
-        displaylink.add(to: .current, forMode: RunLoop.Mode.default)
-    }
-    
-    @objc func frame(displaylink: CADisplayLink) {
-        frameDuration = displaylink.targetTimestamp - displaylink.timestamp
-        frameChange.toggle()
-    }
-    
-}
+let renderWidth = Int(2048*1.0)
+let renderHeight = Int(2048*1.0)
+let renderZNear = 0.001
+let renderZFar = 100.0
 
 class VisionPro: NSObject, ObservableObject {
     @Published var frameDuration: CFTimeInterval = 0
@@ -44,8 +30,6 @@ class VisionPro: NSObject, ObservableObject {
     let handTracking = HandTrackingProvider()
     let sceneReconstruction = SceneReconstructionProvider()
     let planeDetection = PlaneDetectionProvider()
-    let displayLink = DisplayLink()
-    static let sharedInstance: DisplayLink = DisplayLink()
     var nextFrameTime: TimeInterval = 0.0
     
     var planeAnchors: [UUID: PlaneAnchor] = [:]
@@ -95,7 +79,7 @@ class VisionPro: NSObject, ObservableObject {
     
     @objc func frame(displaylink: CADisplayLink) {
         frameDuration = displaylink.targetTimestamp - displaylink.timestamp
-        nextFrameTime = displaylink.targetTimestamp + (frameDuration * 3)
+        nextFrameTime = displaylink.targetTimestamp + (frameDuration * 2)
         frameChange.toggle()
         //print("vsync frame", frameDuration, displaylink.targetTimestamp - CACurrentMediaTime(), displaylink.timestamp - CACurrentMediaTime())
     }
@@ -141,6 +125,7 @@ class VisionPro: NSObject, ObservableObject {
 // Focal depth of the timewarp panel, ideally would be adjusted based on the depth
 // of what the user is looking at.
 let panel_depth: Float = 1
+let rk_panel_depth: Float = 100
 
 // TODO(zhuowei): what's the z supposed to be?
 // x, y, z
@@ -170,7 +155,13 @@ class ImmersiveSystem : System {
     var depthStateGreater: MTLDepthStencilState
     var depthTexture: MTLTexture
     var renderViewports: [MTLViewport] = [MTLViewport(originX: 0, originY: 0, width: 1.0, height: 1.0, znear: 0.1, zfar: 10.0), MTLViewport(originX: 0, originY: 0, width: 1.0, height: 1.0, znear: 0.1, zfar: 10.0)]
+    
+    //
+    var renderTangents: [simd_float4] = [simd_float4(1.73205, 1.0, 1.0, 1.19175), simd_float4(1.0, 1.73205, 1.0, 1.19175)]
+    var renderViewTransforms: [simd_float4x4] = [simd_float4x4([[0.9999865, 0.00515201, -0.0005922073, 0.0], [-0.0051479023, 0.99996406, 0.00674105, -0.0], [0.0006269097, -0.006737909, 0.99997705, -0.0], [-0.033701643, -0.026765306, 0.011856683, 1.0]]), simd_float4x4([[0.9999876, 0.004899999, -0.0009073103, 0.0], [-0.0048943865, 0.9999694, 0.0060919393, -0.0], [0.0009371306, -0.006087418, 0.99998105, -0.0], [0.030268293, -0.024580047, 0.009440895, 1.0]])]
+    //var renderTangents: [simd_float4] = [simd_float4(-1.0471973, 0.7853982, 0.7853982, -0.8726632), simd_float4(-0.7853982, 1.0471973, 0.7853982, -0.8726632)]
     var fullscreenQuadBuffer:MTLBuffer!
+    var lastTexture: MTLTexture? = nil
     
     var dynamicUniformBuffer: MTLBuffer
     var uniformBufferOffset = 0
@@ -185,7 +176,7 @@ class ImmersiveSystem : System {
     
     required init(scene: RealityKit.Scene) {
         //visionPro.createDisplayLink()
-        let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: .rgba16Float, width: 2048, height: 1024, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
+        let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: .rgba16Float, width: renderWidth, height: renderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
         self.drawableQueue = try? TextureResource.DrawableQueue(desc)
         
         let data = Data([0x00, 0x00, 0x00, 0xFF])
@@ -224,8 +215,8 @@ class ImmersiveSystem : System {
         
         // Create depth texture descriptor
         let depthTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float,
-                                                                              width: 2048,
-                                                                              height: 1024,
+                                                                              width: renderWidth,
+                                                                              height: renderHeight*2,
                                                                               mipmapped: false)
         depthTextureDescriptor.usage = [.renderTarget, .shaderRead]
         depthTextureDescriptor.storageMode = .private
@@ -245,8 +236,8 @@ class ImmersiveSystem : System {
         self.dynamicPlaneUniformBuffer.label = "PlaneUniformBuffer"
         planeUniforms = UnsafeMutableRawPointer(dynamicPlaneUniformBuffer.contents()).bindMemory(to:PlaneUniform.self, capacity:1)
         
-        renderViewports[0] = MTLViewport(originX: 0, originY: 0, width: 1024.0, height: 1024.0, znear: 0.1, zfar: 10.0)
-        renderViewports[1] = MTLViewport(originX: 1024.0, originY: 0, width: 1024.0, height: 1024.0, znear: 0.1, zfar: 10.0)
+        renderViewports[0] = MTLViewport(originX: 0, originY: 0, width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
+        renderViewports[1] = MTLViewport(originX: 0, originY: Double(renderHeight), width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
         
         fullscreenQuadVertices.withUnsafeBytes {
             fullscreenQuadBuffer = device.makeBuffer(bytes: $0.baseAddress!, length: $0.count)
@@ -331,21 +322,28 @@ class ImmersiveSystem : System {
             //print("frame", plane.id)
             
             let transform = visionPro.transformMatrix()
-            let x = transform.columns.3.x
-            let y = transform.columns.3.y
-            let z = transform.columns.3.z
-            plane.position = simd_float3(x - transform.columns.2.x, y - transform.columns.2.y, z - transform.columns.2.z)
-            plane.orientation = simd_quatf(transform) * simd_quatf(angle: 1.5708, axis: simd_float3(1,0,0))
-            //print(String(format: "%.2f, %.2f, %.2f", x, y, z), CACurrentMediaTime() - lastUpdateTime)
-            lastUpdateTime = CACurrentMediaTime()
             
-            if let surfaceMaterial = surfaceMaterial {
-                plane.model?.materials = [surfaceMaterial]
-            }
+            var planeTransform = transform
+            //planeTransform *= renderViewTransforms[0]
+            planeTransform.columns.3 -= transform.columns.2 * rk_panel_depth
+            //planeTransform.columns.3 += transform.columns.0 * 0.5
             
             do {
                 let drawable = try drawableQueue?.nextDrawable()
-                drawNextTexture(drawable: drawable!)
+                
+                var scale = simd_float3(renderTangents[0].x + renderTangents[0].y, 1.0, renderTangents[0].z + renderTangents[0].w)
+                scale *= rk_panel_depth
+                var orientation = simd_quatf(transform) * simd_quatf(angle: 1.5708, axis: simd_float3(1,0,0))
+                var position = simd_float3(planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z)
+                
+                //print(String(format: "%.2f, %.2f, %.2f", planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z), CACurrentMediaTime() - lastUpdateTime)
+                lastUpdateTime = CACurrentMediaTime()
+                
+                if let surfaceMaterial = surfaceMaterial {
+                    plane.model?.materials = [surfaceMaterial]
+                }
+                
+                drawNextTexture(drawable: drawable!, simdDeviceAnchor: transform, plane: plane, position: position, orientation: orientation, scale: scale)
             }
             catch {
             
@@ -369,49 +367,88 @@ class ImmersiveSystem : System {
         planeUniforms = UnsafeMutableRawPointer(dynamicPlaneUniformBuffer.contents() + planeUniformBufferOffset).bindMemory(to:PlaneUniform.self, capacity:1)
     }
     
-    private func updateGameStateForVideoFrame(_ eyeIdx: Int, framePose: simd_float4x4) {
-        let simdDeviceAnchor = matrix_identity_float4x4
-        
+    private func updateGameStateForVideoFrame(_ eyeIdx: Int, framePose: simd_float4x4, simdDeviceAnchor: simd_float4x4) {
         func uniforms(forViewIndex viewIndex: Int) -> Uniforms {
             //let view = self.renderViewports[viewIndex]
-            let tangents = simd_float4(-1.0471973, 0.7853982, 0.7853982, -0.8726632)
+            let tangents = renderTangents[viewIndex]
+            let viewTrans = renderViewTransforms[viewIndex]
             
             var framePoseNoTranslation = framePose
             var simdDeviceAnchorNoTranslation = simdDeviceAnchor
             framePoseNoTranslation.columns.3 = simd_float4(0.0, 0.0, 0.0, 1.0)
             simdDeviceAnchorNoTranslation.columns.3 = simd_float4(0.0, 0.0, 0.0, 1.0)
-            let viewMatrix = (simdDeviceAnchor /** view.transform*/).inverse
+            let viewMatrix = (simdDeviceAnchor * viewTrans).inverse
             let viewMatrixFrame = (framePoseNoTranslation.inverse * simdDeviceAnchorNoTranslation).inverse
-            let projection = ProjectiveTransform3D(leftTangent: Double(tangents[0]),
+            /*let projection = ProjectiveTransform3D(leftTangent: Double(tangents[0]),
                                                    rightTangent: Double(tangents[1]),
                                                    topTangent: Double(tangents[2]),
                                                    bottomTangent: Double(tangents[3]),
-                                                   nearZ: 0.1,
-                                                   farZ: 10.0,
+                                                   nearZ: renderZNear,
+                                                   farZ: renderZFar,
+                                                   reverseZ: true)*/
+            
+            let projection = ProjectiveTransform3D(leftTangent: (Double(tangents[0]) + Double(tangents[1])) * 0.5,
+                                                   rightTangent: (Double(tangents[0]) + Double(tangents[1])) * 0.5,
+                                                   topTangent: (Double(tangents[2]) + Double(tangents[3])) * 0.5,
+                                                   bottomTangent: (Double(tangents[2]) + Double(tangents[3])) * 0.5,
+                                                   nearZ: renderZNear,
+                                                   farZ: renderZFar,
                                                    reverseZ: true)
             return Uniforms(projectionMatrix: .init(projection), modelViewMatrixFrame: viewMatrixFrame, modelViewMatrix: viewMatrix, tangents: tangents, which: UInt32(viewIndex))
         }
         
-        self.uniforms[0] = uniforms(forViewIndex: eyeIdx)
+        self.uniforms[0] = uniforms(forViewIndex: 1-eyeIdx)
         /*if drawable.views.count > 1 {
             self.uniforms[0].uniforms.1 = uniforms(forViewIndex: 1)
         }*/
     }
     
-    func renderOverlay(eyeIdx: Int, colorTexture: MTLTexture, commandBuffer: MTLCommandBuffer, framePose: simd_float4x4)
+    func planeToColor(plane: PlaneAnchor) -> simd_float4 {
+        let planeAlpha: Float = 1.0
+        var subtleChange = 0.75 + ((Float(plane.id.hashValue & 0xFF) / Float(0xff)) * 0.25)
+        
+        switch(plane.classification) {
+            case .ceiling: // #62ea80
+                return simd_float4(0.3843137254901961, 0.9176470588235294, 0.5019607843137255, 1.0) * subtleChange * planeAlpha
+            case .door: // #1a5ff4
+                return simd_float4(0.10196078431372549, 0.37254901960784315, 0.9568627450980393, 1.0) * subtleChange * planeAlpha
+            case .floor: // #bf6505
+                return simd_float4(0.7490196078431373, 0.396078431372549, 0.0196078431372549, 1.0) * subtleChange * planeAlpha
+            case .seat: // #ef67af
+                return simd_float4(0.9372549019607843, 0.403921568627451, 0.6862745098039216, 1.0) * subtleChange * planeAlpha
+            case .table: // #c937d3
+                return simd_float4(0.788235294117647, 0.21568627450980393, 0.8274509803921568, 1.0) * subtleChange * planeAlpha
+            case .wall: // #dced5e
+                return simd_float4(0.8627450980392157, 0.9294117647058824, 0.3686274509803922, 1.0) * subtleChange * planeAlpha
+            case .window: // #4aefce
+                return simd_float4(0.2901960784313726, 0.9372549019607843, 0.807843137254902, 1.0) * subtleChange * planeAlpha
+            case .unknown: // #0e576b
+                return simd_float4(0.054901960784313725, 0.3411764705882353, 0.4196078431372549, 1.0) * subtleChange * planeAlpha
+            case .undetermined: // #749606
+                return simd_float4(0.4549019607843137, 0.5882352941176471, 0.023529411764705882, 1.0) * subtleChange * planeAlpha
+            default:
+                return simd_float4(1.0, 0.0, 0.0, 1.0) * subtleChange * planeAlpha // red
+        }
+    }
+    
+    func planeToLineColor(plane: PlaneAnchor) -> simd_float4 {
+        return planeToColor(plane: plane)
+    }
+    
+    func renderOverlay(eyeIdx: Int, colorTexture: MTLTexture, commandBuffer: MTLCommandBuffer, framePose: simd_float4x4, simdDeviceAnchor: simd_float4x4)
     {
         self.updateDynamicBufferState(eyeIdx)
-        self.updateGameStateForVideoFrame(eyeIdx, framePose: framePose)
+        self.updateGameStateForVideoFrame(eyeIdx, framePose: framePose, simdDeviceAnchor: simdDeviceAnchor)
         
         // Toss out the depth buffer, keep colors
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = colorTexture
         renderPassDescriptor.colorAttachments[0].loadAction = eyeIdx == 0 ? .clear : .load
         renderPassDescriptor.colorAttachments[0].storeAction = .store
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 0.0)
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0)
         renderPassDescriptor.depthAttachment.texture = depthTexture
-        renderPassDescriptor.depthAttachment.loadAction = .clear
-        renderPassDescriptor.depthAttachment.storeAction = .dontCare
+        renderPassDescriptor.depthAttachment.loadAction = eyeIdx == 0 ? .clear : .load
+        renderPassDescriptor.depthAttachment.storeAction = .store
         renderPassDescriptor.depthAttachment.clearDepth = 0.0
         //renderPassDescriptor.rasterizationRateMap = drawable.rasterizationRateMaps.first
         
@@ -440,14 +477,19 @@ class ImmersiveSystem : System {
         renderEncoder.setRenderPipelineState(pipelineState)
         renderEncoder.setDepthStencilState(depthStateGreater)
         
+        /*selectNextPlaneUniformBuffer()
+        self.planeUniforms[0].planeTransform = matrix_identity_float4x4
+        self.planeUniforms[0].planeColor = eyeIdx == 0 ? simd_float4(0.0, 1.0, 0.0, 1.0) : simd_float4(0.0, 0.0, 1.0, 1.0)
+        self.planeUniforms[0].planeDoProximity = 0.0
+        renderEncoder.setVertexBuffer(dynamicPlaneUniformBuffer, offset:planeUniformBufferOffset, index: BufferIndex.planeUniforms.rawValue)
         renderEncoder.setVertexBuffer(fullscreenQuadBuffer, offset: 0, index: VertexAttribute.position.rawValue)
         renderEncoder.setVertexBuffer(fullscreenQuadBuffer, offset: (3*4)*4, index: VertexAttribute.texcoord.rawValue)
-        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)*/
         
-        /*WorldTracker.shared.lockPlaneAnchors()
+        visionPro.lockPlaneAnchors()
         
         // Render planes
-        for plane in WorldTracker.shared.planeAnchors {
+        for plane in visionPro.planeAnchors {
             let plane = plane.value
             let faces = plane.geometry.meshFaces
             renderEncoder.setVertexBuffer(plane.geometry.meshVertices.buffer, offset: 0, index: VertexAttribute.position.rawValue)
@@ -469,7 +511,7 @@ class ImmersiveSystem : System {
         }
         
         // Render lines
-        for plane in WorldTracker.shared.planeAnchors {
+        for plane in visionPro.planeAnchors {
             let plane = plane.value
             let faces = plane.geometry.meshFaces
             renderEncoder.setVertexBuffer(plane.geometry.meshVertices.buffer, offset: 0, index: VertexAttribute.position.rawValue)
@@ -489,24 +531,48 @@ class ImmersiveSystem : System {
                                                 indexBuffer: faces.buffer,
                                                 indexBufferOffset: 0)
         }
-        WorldTracker.shared.unlockPlaneAnchors()
-        */
+        visionPro.unlockPlaneAnchors()
+        
         renderEncoder.popDebugGroup()
         renderEncoder.endEncoding()
     }
     
-    func drawNextTexture(drawable: TextureResource.Drawable) {
+    var lastSubmit = 0.0
+    func drawNextTexture(drawable: TextureResource.Drawable, simdDeviceAnchor: simd_float4x4, plane: ModelEntity, position: simd_float3, orientation: simd_quatf, scale: simd_float3) {
     
         autoreleasepool {
             guard let commandBuffer = commandQueue.makeCommandBuffer() else {
                 return
             }
             
-            renderOverlay(eyeIdx: 0, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4)
-            renderOverlay(eyeIdx: 1, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4)
+            
+            renderOverlay(eyeIdx: 0, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
+            renderOverlay(eyeIdx: 1, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
+            
+            /*if let encoder = commandBuffer.makeBlitCommandEncoder() {
+                encoder.generateMipmaps(for: drawable.texture)
+                encoder.endEncoding()
+            }*/
+            
+            let submitTime = CACurrentMediaTime()
+            //print(submitTime, CACurrentMediaTime() - lastSubmit)
+            lastSubmit = submitTime
+            /*commandBuffer.addScheduledHandler { (_ commandBuffer)-> Swift.Void in
+                print("scheduled!", submitTime, CACurrentMediaTime() - submitTime)
+            }*/
+            /*commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
+                print("completed!", submitTime, CACurrentMediaTime() - submitTime)
+                
+                //drawable.presentOnSceneUpdate()
+            }*/
+            
+            plane.position = position
+            plane.orientation = orientation
+            plane.scale = scale
             
             commandBuffer.present(drawable)
             commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
         }
     }
 }

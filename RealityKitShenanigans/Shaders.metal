@@ -23,6 +23,7 @@ typedef struct
     float4 viewPosition;
     float4 color;
     float2 texCoord;
+    float planeDoProximity;
 } ColorInOutPlane;
 
 typedef struct
@@ -34,28 +35,17 @@ typedef struct
 
 vertex ColorInOutPlane vertexShader(Vertex in [[stage_in]],
                                ushort amp_id [[amplification_id]],
-                               constant Uniforms & uniforms [[ buffer(BufferIndexUniforms) ]])
+                               constant Uniforms & uniforms [[ buffer(BufferIndexUniforms) ]],
+                               constant PlaneUniform & planeUniform [[ buffer(BufferIndexPlaneUniforms) ]])
 {
     ColorInOutPlane out;
     
     float4 position = float4(in.position, 1.0);
-    if (position.x < 1.0) {
-        position.x *= uniforms.tangents[0];
-    }
-    else {
-        position.x *= uniforms.tangents[1];
-    }
-    if (position.y < 1.0) {
-        position.y *= uniforms.tangents[3];
-    }
-    else {
-        position.y *= uniforms.tangents[2];
-    }
-
-    out.position = uniforms.projectionMatrix * uniforms.modelViewMatrix * position;
-    out.viewPosition = uniforms.modelViewMatrix* position;
+    out.position = uniforms.projectionMatrix * uniforms.modelViewMatrix * planeUniform.planeTransform * position;
+    out.viewPosition = uniforms.modelViewMatrix * planeUniform.planeTransform * position;
     out.texCoord = in.texCoord;
-    out.color = float4(0.0, uniforms.which == 0 ? 1.0 : 0.0, uniforms.which == 1 ? 1.0 : 0.0, 1.0);
+    out.color = planeUniform.planeColor;
+    out.planeDoProximity = planeUniform.planeDoProximity;
 
     return out;
 }
@@ -64,7 +54,7 @@ fragment float4 fragmentShader(ColorInOutPlane in [[stage_in]],
                                texture2d<half> colorMap     [[ texture(TextureIndexColor) ]])
 {
     float4 color = in.color;
-    /*if (in.planeDoProximity >= 0.5) {
+    if (in.planeDoProximity >= 0.5) {
         float cameraDistance = ((-in.viewPosition.z / in.viewPosition.w));
         float cameraX = (in.viewPosition.x);
         float cameraY = (in.viewPosition.y);
@@ -73,14 +63,13 @@ fragment float4 fragmentShader(ColorInOutPlane in [[stage_in]],
         
         color *= pow(distFromCenterOfCamera * cameraDistance, 2.2);
         color.a = in.color.a;
-    }*/
-    
-    //color.a = in.viewPosition.x;
+    }
     
     if (color.a <= 0.0) {
         discard_fragment();
         return float4(0.0, 0.0, 0.0, 0.0);
     }
+    color.a = 1.0;
     return color;
 }
 
