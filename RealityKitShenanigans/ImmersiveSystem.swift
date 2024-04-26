@@ -15,7 +15,7 @@ import Spatial
 let alignedUniformsSize = (MemoryLayout<Uniforms>.size + 0xFF) & -0x100
 let alignedPlaneUniformSize = (MemoryLayout<PlaneUniform>.size + 0xFF) & -0x100
 let maxBuffersInFlight = 3
-let maxPlanesDrawn = 512
+let maxPlanesDrawn = 1024
 let renderWidth = Int(2048*1.0)
 let renderHeight = Int(2048*1.0)
 let renderZNear = 0.001
@@ -156,9 +156,6 @@ class ImmersiveSystem : System {
     var depthTexture: MTLTexture
     var renderViewports: [MTLViewport] = [MTLViewport(originX: 0, originY: 0, width: 1.0, height: 1.0, znear: 0.1, zfar: 10.0), MTLViewport(originX: 0, originY: 0, width: 1.0, height: 1.0, znear: 0.1, zfar: 10.0)]
     
-    //
-    var renderTangents: [simd_float4] = [simd_float4(1.73205, 1.0, 1.0, 1.19175), simd_float4(1.0, 1.73205, 1.0, 1.19175)]
-    var renderViewTransforms: [simd_float4x4] = [simd_float4x4([[0.9999865, 0.00515201, -0.0005922073, 0.0], [-0.0051479023, 0.99996406, 0.00674105, -0.0], [0.0006269097, -0.006737909, 0.99997705, -0.0], [-0.033701643, -0.026765306, 0.011856683, 1.0]]), simd_float4x4([[0.9999876, 0.004899999, -0.0009073103, 0.0], [-0.0048943865, 0.9999694, 0.0060919393, -0.0], [0.0009371306, -0.006087418, 0.99998105, -0.0], [0.030268293, -0.024580047, 0.009440895, 1.0]])]
     //var renderTangents: [simd_float4] = [simd_float4(-1.0471973, 0.7853982, 0.7853982, -0.8726632), simd_float4(-0.7853982, 1.0471973, 0.7853982, -0.8726632)]
     var fullscreenQuadBuffer:MTLBuffer!
     var lastTexture: MTLTexture? = nil
@@ -251,7 +248,6 @@ class ImmersiveSystem : System {
                 named: "/Root/SBSMaterial",
                 from: "SBSMaterial.usda"
             )
-            let tex = MaterialParameters.Texture(self.textureResource!)
             try! self.surfaceMaterial!.setParameter(
                 name: "texture",
                 value: .textureResource(self.textureResource!)
@@ -331,7 +327,7 @@ class ImmersiveSystem : System {
             do {
                 let drawable = try drawableQueue?.nextDrawable()
                 
-                var scale = simd_float3(renderTangents[0].x + renderTangents[0].y, 1.0, renderTangents[0].z + renderTangents[0].w)
+                var scale = simd_float3(DummyMetalRenderer.renderTangents[0].x + DummyMetalRenderer.renderTangents[0].y, 1.0, DummyMetalRenderer.renderTangents[0].z + DummyMetalRenderer.renderTangents[0].w)
                 scale *= rk_panel_depth
                 var orientation = simd_quatf(transform) * simd_quatf(angle: 1.5708, axis: simd_float3(1,0,0))
                 var position = simd_float3(planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z)
@@ -370,8 +366,8 @@ class ImmersiveSystem : System {
     private func updateGameStateForVideoFrame(_ eyeIdx: Int, framePose: simd_float4x4, simdDeviceAnchor: simd_float4x4) {
         func uniforms(forViewIndex viewIndex: Int) -> Uniforms {
             //let view = self.renderViewports[viewIndex]
-            let tangents = renderTangents[viewIndex]
-            let viewTrans = renderViewTransforms[viewIndex]
+            let tangents = DummyMetalRenderer.renderTangents[viewIndex]
+            let viewTrans = DummyMetalRenderer.renderViewTransforms[viewIndex]
             
             var framePoseNoTranslation = framePose
             var simdDeviceAnchorNoTranslation = simdDeviceAnchor
@@ -405,7 +401,7 @@ class ImmersiveSystem : System {
     
     func planeToColor(plane: PlaneAnchor) -> simd_float4 {
         let planeAlpha: Float = 1.0
-        var subtleChange = 0.75 + ((Float(plane.id.hashValue & 0xFF) / Float(0xff)) * 0.25)
+        let subtleChange = 0.75 + ((Float(plane.id.hashValue & 0xFF) / Float(0xff)) * 0.25)
         
         switch(plane.classification) {
             case .ceiling: // #62ea80

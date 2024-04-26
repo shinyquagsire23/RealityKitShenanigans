@@ -33,7 +33,33 @@ struct ContentView: View {
         .padding()
         .onChange(of: showImmersiveSpace) { _, newValue in
             Task {
-                if newValue {
+                if newValue && !immersiveSpaceIsShown {
+                    
+                    if !DummyMetalRenderer.haveRenderInfo {
+                        var dummySpaceIsOpened = false
+                        while !dummySpaceIsOpened {
+                            switch await openImmersiveSpace(id: "DummyImmersiveSpace") {
+                            case .opened:
+                                dummySpaceIsOpened = true
+                            case .error, .userCancelled:
+                                fallthrough
+                            @unknown default:
+                                dummySpaceIsOpened = false
+                            }
+                        }
+                        
+                        while dummySpaceIsOpened && !DummyMetalRenderer.haveRenderInfo {
+                            try! await Task.sleep(nanoseconds: 1_000_000)
+                        }
+                        
+                        await dismissImmersiveSpace()
+                        try! await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
+                    
+                    if !DummyMetalRenderer.haveRenderInfo {
+                        print("MISSING VIEW INFO!!")
+                    }
+                    
                     switch await openImmersiveSpace(id: "ImmersiveSpace") {
                     case .opened:
                         immersiveSpaceIsShown = true
