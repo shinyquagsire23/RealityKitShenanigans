@@ -233,8 +233,8 @@ class ImmersiveSystem : System {
         self.dynamicPlaneUniformBuffer.label = "PlaneUniformBuffer"
         planeUniforms = UnsafeMutableRawPointer(dynamicPlaneUniformBuffer.contents()).bindMemory(to:PlaneUniform.self, capacity:1)
         
-        renderViewports[0] = MTLViewport(originX: 0, originY: 0, width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
-        renderViewports[1] = MTLViewport(originX: 0, originY: Double(renderHeight), width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
+        renderViewports[0] = MTLViewport(originX: 0, originY: Double(renderHeight), width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
+        renderViewports[1] = MTLViewport(originX: 0, originY: 0, width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
         
         fullscreenQuadVertices.withUnsafeBytes {
             fullscreenQuadBuffer = device.makeBuffer(bytes: $0.baseAddress!, length: $0.count)
@@ -393,7 +393,7 @@ class ImmersiveSystem : System {
             return Uniforms(projectionMatrix: .init(projection), modelViewMatrixFrame: viewMatrixFrame, modelViewMatrix: viewMatrix, tangents: tangents, which: UInt32(viewIndex))
         }
         
-        self.uniforms[0] = uniforms(forViewIndex: 1-eyeIdx)
+        self.uniforms[0] = uniforms(forViewIndex: eyeIdx)
         /*if drawable.views.count > 1 {
             self.uniforms[0].uniforms.1 = uniforms(forViewIndex: 1)
         }*/
@@ -541,9 +541,9 @@ class ImmersiveSystem : System {
                 return
             }
             
-            
-            renderOverlay(eyeIdx: 0, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
-            renderOverlay(eyeIdx: 1, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
+            for i in 0..<DummyMetalRenderer.renderViewTransforms.count {
+                renderOverlay(eyeIdx: i, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
+            }
             
             /*if let encoder = commandBuffer.makeBlitCommandEncoder() {
                 encoder.generateMipmaps(for: drawable.texture)
