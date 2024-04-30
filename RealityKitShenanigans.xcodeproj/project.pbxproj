@@ -8,6 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		E706F2352BDC65B900287A60 /* DummyMetalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E706F2342BDC65B900287A60 /* DummyMetalRenderer.swift */; };
+		E706F2372BE16CC700287A60 /* VideoReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E706F2362BE16CC700287A60 /* VideoReader.swift */; };
+		E706F2392BE16FD100287A60 /* badapple.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = E706F2382BE16FD100287A60 /* badapple.mp4 */; };
+		E7A98A9C2BE18FBD003DF333 /* badapple.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = E7A98A9B2BE18FBD003DF333 /* badapple.mp3 */; };
 		E7F6273A2BD9D3B300ABE83B /* RealityKitContent in Frameworks */ = {isa = PBXBuildFile; productRef = E7F627392BD9D3B300ABE83B /* RealityKitContent */; };
 		E7F6273C2BD9D3B300ABE83B /* RealityKitShenanigansApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F6273B2BD9D3B300ABE83B /* RealityKitShenanigansApp.swift */; };
 		E7F6273E2BD9D3B300ABE83B /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F6273D2BD9D3B300ABE83B /* ContentView.swift */; };
@@ -22,6 +25,9 @@
 
 /* Begin PBXFileReference section */
 		E706F2342BDC65B900287A60 /* DummyMetalRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DummyMetalRenderer.swift; sourceTree = "<group>"; };
+		E706F2362BE16CC700287A60 /* VideoReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoReader.swift; sourceTree = "<group>"; };
+		E706F2382BE16FD100287A60 /* badapple.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = badapple.mp4; sourceTree = "<group>"; };
+		E7A98A9B2BE18FBD003DF333 /* badapple.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = badapple.mp3; sourceTree = "<group>"; };
 		E7F627342BD9D3B300ABE83B /* RealityKitShenanigans.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RealityKitShenanigans.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E7F627382BD9D3B300ABE83B /* RealityKitContent */ = {isa = PBXFileReference; lastKnownFileType = wrapper; path = RealityKitContent; sourceTree = "<group>"; };
 		E7F6273B2BD9D3B300ABE83B /* RealityKitShenanigansApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealityKitShenanigansApp.swift; sourceTree = "<group>"; };
@@ -70,12 +76,15 @@
 		E7F627362BD9D3B300ABE83B /* RealityKitShenanigans */ = {
 			isa = PBXGroup;
 			children = (
+				E706F2382BE16FD100287A60 /* badapple.mp4 */,
+				E7A98A9B2BE18FBD003DF333 /* badapple.mp3 */,
 				E7F627542BDA261700ABE83B /* SBSMaterial.usda */,
 				E7F6273B2BD9D3B300ABE83B /* RealityKitShenanigansApp.swift */,
 				E7F6273D2BD9D3B300ABE83B /* ContentView.swift */,
 				E7F6273F2BD9D3B300ABE83B /* ImmersiveView.swift */,
 				E7F6274E2BD9D7C000ABE83B /* ImmersiveSystem.swift */,
 				E706F2342BDC65B900287A60 /* DummyMetalRenderer.swift */,
+				E706F2362BE16CC700287A60 /* VideoReader.swift */,
 				E7F627502BDA053B00ABE83B /* Shaders.metal */,
 				E7F627522BDA09B500ABE83B /* ShaderTypes.h */,
 				E7F627412BD9D3B300ABE83B /* ImageBasedLighting.skybox */,
@@ -164,10 +173,12 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E706F2392BE16FD100287A60 /* badapple.mp4 in Resources */,
 				E7F627442BD9D3B400ABE83B /* Assets.xcassets in Resources */,
 				E7F627472BD9D3B400ABE83B /* Preview Assets.xcassets in Resources */,
 				E7F627552BDA261700ABE83B /* SBSMaterial.usda in Resources */,
 				E7F627422BD9D3B300ABE83B /* ImageBasedLighting.skybox in Resources */,
+				E7A98A9C2BE18FBD003DF333 /* badapple.mp3 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -184,6 +195,7 @@
 				E7F627402BD9D3B300ABE83B /* ImmersiveView.swift in Sources */,
 				E7F627512BDA053B00ABE83B /* Shaders.metal in Sources */,
 				E706F2352BDC65B900287A60 /* DummyMetalRenderer.swift in Sources */,
+				E706F2372BE16CC700287A60 /* VideoReader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

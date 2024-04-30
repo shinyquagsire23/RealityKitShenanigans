@@ -16,6 +16,7 @@ struct ContentView: View {
 
     @Environment(\.openImmersiveSpace) var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) var dismissImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         VStack {
@@ -60,6 +61,8 @@ struct ContentView: View {
                         print("MISSING VIEW INFO!!")
                     }
                     
+                    print("Open real immersive space")
+                    
                     switch await openImmersiveSpace(id: "ImmersiveSpace") {
                     case .opened:
                         immersiveSpaceIsShown = true
@@ -69,6 +72,9 @@ struct ContentView: View {
                         immersiveSpaceIsShown = false
                         showImmersiveSpace = false
                     }
+                    
+                    dismissWindow(id: "Entry")
+                    
                 } else if immersiveSpaceIsShown {
                     await dismissImmersiveSpace()
                     immersiveSpaceIsShown = false

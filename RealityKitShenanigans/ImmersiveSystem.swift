@@ -11,6 +11,7 @@ import QuartzCore
 import Metal
 import MetalKit
 import Spatial
+import AVFoundation
 
 let alignedUniformsSize = (MemoryLayout<Uniforms>.size + 0xFF) & -0x100
 let alignedPlaneUniformSize = (MemoryLayout<PlaneUniform>.size + 0xFF) & -0x100
@@ -97,7 +98,6 @@ class VisionPro: NSObject, ObservableObject {
             case .removed:
                 removePlane(update.anchor)
             }
-            
         }
     }
     
@@ -124,20 +124,20 @@ class VisionPro: NSObject, ObservableObject {
 
 // Focal depth of the timewarp panel, ideally would be adjusted based on the depth
 // of what the user is looking at.
-let panel_depth: Float = 1
+let panel_depth: Float = 70
 let rk_panel_depth: Float = 100
 
 // TODO(zhuowei): what's the z supposed to be?
 // x, y, z
 // u, v
-let fullscreenQuadVertices:[Float] = [-panel_depth, -panel_depth, -panel_depth,
-                                       panel_depth, -panel_depth, -panel_depth,
-                                       -panel_depth, panel_depth, -panel_depth,
-                                       panel_depth, panel_depth, -panel_depth,
+let fullscreenQuadVertices:[Float] = [-panel_depth*5, -panel_depth*5, -panel_depth,
+                                       panel_depth*5, -panel_depth*5, -panel_depth,
+                                       -panel_depth*5, panel_depth*5, -panel_depth,
+                                       panel_depth*5, panel_depth*5, -panel_depth,
                                        0, 1,
-                                       0.5, 1,
+                                       1, 1,
                                        0, 0,
-                                       0.5, 0]
+                                       1, 0]
 
 class ImmersiveSystem : System {
     let visionPro = VisionPro()
@@ -170,6 +170,13 @@ class ImmersiveSystem : System {
     var planeUniformBufferOffset = 0
     var planeUniformBufferIndex = 0
     var planeUniforms: UnsafeMutablePointer<PlaneUniform>
+    var badAppleTexture: [MTLTexture?] = [nil, nil, nil, nil, nil, nil, nil, nil, nil, nil]
+    var badAppleIdx: Int = 0
+    var badAppleLock = NSObject()
+    var frameIdx: Int = 0
+    var playingAudio: Bool = false
+    
+    var video: VideoReader? = nil
     
     required init(scene: RealityKit.Scene) {
         //visionPro.createDisplayLink()
@@ -254,6 +261,14 @@ class ImmersiveSystem : System {
             )
             textureResource!.replace(withDrawables: drawableQueue!)
         }
+        
+        if CVMetalTextureCacheCreate(nil, nil, self.device, nil, &textureCache) != 0 {
+            fatalError("CVMetalTextureCacheCreate")
+        }
+                
+        video = VideoReader()
+        video?.sampleRead = self.readVideoSample
+        //video?.readSamples()
     }
 
     class func buildMetalVertexDescriptor() -> MTLVertexDescriptor {
@@ -310,11 +325,65 @@ class ImmersiveSystem : System {
         
         return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
     }
+    
+    func readVideoSample(buffer: CMSampleBuffer) {
+        let pixelFormat = MTLPixelFormat.bgra8Unorm
+        guard let cvImageBuffer = CMSampleBufferGetImageBuffer(buffer)
+        else {
+            return
+        }
+        guard
+            let textureCache = textureCache
+        else {
+            return
+        }
+
+        let width = CVPixelBufferGetWidth(cvImageBuffer)
+        let height = CVPixelBufferGetHeight(cvImageBuffer)
+        var textureOptional: CVMetalTexture?
+
+        let createResult = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, textureCache, cvImageBuffer, nil, pixelFormat, width, height, 0, &textureOptional)
+
+        guard
+            createResult == kCVReturnSuccess,
+            let texture = textureOptional,
+            let resultTexture = CVMetalTextureGetTexture(texture)
+        else {
+            return
+        }
+        //print("texture!", CACurrentMediaTime(), resultTexture)
+        
+        objc_sync_enter(badAppleLock)
+        badAppleTexture[badAppleIdx] = resultTexture
+        //badAppleIdx = (badAppleIdx + 1) % 10
+        objc_sync_exit(badAppleLock)
+    }
 
     func update(context: SceneUpdateContext) {
         // RealityKit automatically calls this every frame for every scene.
         let plane = context.scene.findEntity(named: "video_plane") as? ModelEntity
         if let plane = plane {
+            //let resource = try AudioFileResource.load(named: "badapple,mp3", in: nil, inputMode: .nonSpatial, loadingStrategy: .preload, shouldLoop: true)
+            
+            if !playingAudio {
+                let audioSession = AVAudioSession.sharedInstance()
+                do {
+                    try audioSession.setActive(true)
+                    try audioSession.setCategory(.playAndRecord, options: [.mixWithOthers, .allowBluetoothA2DP, .allowAirPlay])
+                    try audioSession.setMode(.voiceChat)
+                    try audioSession.setPreferredOutputNumberOfChannels(2)
+                    try audioSession.setIntendedSpatialExperience(.bypassed)
+                } catch {
+                    print("Failed to set the audio session configuration?")
+                }
+        
+                let resource = try! AudioFileResource.load(contentsOf: Bundle.main.url(forResource: "badapple", withExtension: "mp3")!)
+
+                let audioController = plane.prepareAudio(resource)
+                audioController.play()
+                playingAudio = true
+            }
+
             //print("frame", plane.id)
             
             let transform = visionPro.transformMatrix()
@@ -339,7 +408,17 @@ class ImmersiveSystem : System {
                     plane.model?.materials = [surfaceMaterial]
                 }
                 
+                video?.sampleRead = self.readVideoSample
+                
+                frameIdx += 1
+                //if frameIdx % 3 == 0 {
+                //    video?.sampleRead = self.readVideoSample
+                    video?.readSamplesManually()
+                //}
+                
+                objc_sync_enter(badAppleLock)
                 drawNextTexture(drawable: drawable!, simdDeviceAnchor: transform, plane: plane, position: position, orientation: orientation, scale: scale)
+                objc_sync_exit(badAppleLock)
             }
             catch {
             
@@ -427,8 +506,14 @@ class ImmersiveSystem : System {
         }
     }
     
+    func planeToColor2(plane: PlaneAnchor) -> simd_float4 {
+        var orig = planeToColor(plane: plane)
+        let val = ((orig[0]+orig[1]+orig[2])/3.0) * 1.5
+        return simd_float4(val, val, val, 1.0)
+    }
+    
     func planeToLineColor(plane: PlaneAnchor) -> simd_float4 {
-        return planeToColor(plane: plane)
+        return planeToColor2(plane: plane)
     }
     
     func renderOverlay(eyeIdx: Int, colorTexture: MTLTexture, commandBuffer: MTLCommandBuffer, framePose: simd_float4x4, simdDeviceAnchor: simd_float4x4)
@@ -461,6 +546,7 @@ class ImmersiveSystem : System {
         renderEncoder.setFrontFacing(.counterClockwise)
         renderEncoder.setViewports([renderViewports[eyeIdx]])
         renderEncoder.setVertexBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
+        renderEncoder.setFragmentTexture(badAppleTexture[badAppleIdx], index: 0)
         
         /*if drawable.views.count > 1 {
             var viewMappings = (0..<drawable.views.count).map {
@@ -473,14 +559,13 @@ class ImmersiveSystem : System {
         renderEncoder.setRenderPipelineState(pipelineState)
         renderEncoder.setDepthStencilState(depthStateGreater)
         
-        /*selectNextPlaneUniformBuffer()
-        self.planeUniforms[0].planeTransform = matrix_identity_float4x4
-        self.planeUniforms[0].planeColor = eyeIdx == 0 ? simd_float4(0.0, 1.0, 0.0, 1.0) : simd_float4(0.0, 0.0, 1.0, 1.0)
+        self.planeUniforms[0].planeTransform = simdDeviceAnchor
+        self.planeUniforms[0].planeColor = simd_float4(0.7, 0.7, 0.7, 1.0)
         self.planeUniforms[0].planeDoProximity = 0.0
         renderEncoder.setVertexBuffer(dynamicPlaneUniformBuffer, offset:planeUniformBufferOffset, index: BufferIndex.planeUniforms.rawValue)
         renderEncoder.setVertexBuffer(fullscreenQuadBuffer, offset: 0, index: VertexAttribute.position.rawValue)
         renderEncoder.setVertexBuffer(fullscreenQuadBuffer, offset: (3*4)*4, index: VertexAttribute.texcoord.rawValue)
-        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)*/
+        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         
         visionPro.lockPlaneAnchors()
         
@@ -494,7 +579,7 @@ class ImmersiveSystem : System {
             //self.updateGameStateForVideoFrame(drawable: drawable, framePose: framePose, planeTransform: plane.originFromAnchorTransform)
             selectNextPlaneUniformBuffer()
             self.planeUniforms[0].planeTransform = plane.originFromAnchorTransform
-            self.planeUniforms[0].planeColor = planeToColor(plane: plane)
+            self.planeUniforms[0].planeColor = planeToColor2(plane: plane)
             self.planeUniforms[0].planeDoProximity = 1.0
             renderEncoder.setVertexBuffer(dynamicPlaneUniformBuffer, offset:planeUniformBufferOffset, index: BufferIndex.planeUniforms.rawValue)
             

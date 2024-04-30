@@ -28,7 +28,7 @@ struct ContentStageConfiguration: CompositorLayerConfiguration {
 @main
 struct RealityKitShenanigansApp: App {
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "Entry") {
             ContentView()
         }
         
