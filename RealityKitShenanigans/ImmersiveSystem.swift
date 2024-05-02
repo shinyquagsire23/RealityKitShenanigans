@@ -17,15 +17,14 @@ let alignedUniformsSize = (MemoryLayout<Uniforms>.size + 0xFF) & -0x100
 let alignedPlaneUniformSize = (MemoryLayout<PlaneUniform>.size + 0xFF) & -0x100
 let maxBuffersInFlight = 3
 let maxPlanesDrawn = 1024
-let renderWidth = Int(2048*1.0)
-let renderHeight = Int(2048*1.0)
+let renderWidth = Int(1920)
+let renderHeight = Int(1840)
+let renderScale = 2.25
+let renderFormat = MTLPixelFormat.bgra8Unorm // rgba8Unorm, rgba8Unorm_srgb, bgra8Unorm, bgra8Unorm_srgb, rgba16Float
 let renderZNear = 0.001
 let renderZFar = 100.0
 
 class VisionPro: NSObject, ObservableObject {
-    @Published var frameDuration: CFTimeInterval = 0
-    @Published var frameChange: Bool = false
-    
     let arSession = ARKitSession()
     let worldTracking = WorldTrackingProvider()
     let handTracking = HandTrackingProvider()
@@ -35,6 +34,7 @@ class VisionPro: NSObject, ObservableObject {
     
     var planeAnchors: [UUID: PlaneAnchor] = [:]
     var planeLock = NSObject()
+    var vsyncDelta: Double = (1.0 / 90.0)
     
     override init() {
         super.init()
@@ -79,9 +79,9 @@ class VisionPro: NSObject, ObservableObject {
     }
     
     @objc func frame(displaylink: CADisplayLink) {
-        frameDuration = displaylink.targetTimestamp - displaylink.timestamp
-        nextFrameTime = displaylink.targetTimestamp + (frameDuration * 2)
-        frameChange.toggle()
+        let frameDuration = displaylink.targetTimestamp - displaylink.timestamp
+        nextFrameTime = displaylink.targetTimestamp + (frameDuration * 4)
+        vsyncDelta = frameDuration
         //print("vsync frame", frameDuration, displaylink.targetTimestamp - CACurrentMediaTime(), displaylink.timestamp - CACurrentMediaTime())
     }
     
@@ -170,17 +170,24 @@ class ImmersiveSystem : System {
     var planeUniformBufferOffset = 0
     var planeUniformBufferIndex = 0
     var planeUniforms: UnsafeMutablePointer<PlaneUniform>
-    var badAppleTexture: [MTLTexture?] = [nil, nil, nil, nil, nil, nil, nil, nil, nil, nil]
-    var badAppleIdx: Int = 0
+    var badAppleTexture: MTLTexture? = nil
     var badAppleLock = NSObject()
     var frameIdx: Int = 0
-    var playingAudio: Bool = false
+    
+    var currentRenderWidth: Int = Int(Double(renderWidth) * renderScale)
+    var currentRenderHeight: Int = Int(Double(renderHeight) * renderScale)
+    var lastRenderWidth: Int = Int(Double(renderWidth) * renderScale)
+    var lastRenderHeight: Int = Int(Double(renderHeight) * renderScale)
+    var lastFbChangeTime: Double = 0.0
+    var lockOutRaising: Bool = false
+    var deltaLeftovers: Double = 0.0
+    var currentRenderScale: Double = renderScale
     
     var video: VideoReader? = nil
     
     required init(scene: RealityKit.Scene) {
         //visionPro.createDisplayLink()
-        let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: .rgba16Float, width: renderWidth, height: renderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
+        let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
         self.drawableQueue = try? TextureResource.DrawableQueue(desc)
         
         let data = Data([0x00, 0x00, 0x00, 0xFF])
@@ -219,8 +226,8 @@ class ImmersiveSystem : System {
         
         // Create depth texture descriptor
         let depthTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float,
-                                                                              width: renderWidth,
-                                                                              height: renderHeight*2,
+                                                                              width: currentRenderWidth,
+                                                                              height: currentRenderHeight*2,
                                                                               mipmapped: false)
         depthTextureDescriptor.usage = [.renderTarget, .shaderRead]
         depthTextureDescriptor.storageMode = .private
@@ -240,8 +247,8 @@ class ImmersiveSystem : System {
         self.dynamicPlaneUniformBuffer.label = "PlaneUniformBuffer"
         planeUniforms = UnsafeMutableRawPointer(dynamicPlaneUniformBuffer.contents()).bindMemory(to:PlaneUniform.self, capacity:1)
         
-        renderViewports[0] = MTLViewport(originX: 0, originY: Double(renderHeight), width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
-        renderViewports[1] = MTLViewport(originX: 0, originY: 0, width: Double(renderWidth), height: Double(renderHeight), znear: renderZNear, zfar: renderZFar)
+        renderViewports[0] = MTLViewport(originX: 0, originY: Double(currentRenderHeight), width: Double(currentRenderWidth), height: Double(currentRenderHeight), znear: renderZNear, zfar: renderZFar)
+        renderViewports[1] = MTLViewport(originX: 0, originY: 0, width: Double(currentRenderWidth), height: Double(currentRenderHeight), znear: renderZNear, zfar: renderZFar)
         
         fullscreenQuadVertices.withUnsafeBytes {
             fullscreenQuadBuffer = device.makeBuffer(bytes: $0.baseAddress!, length: $0.count)
@@ -311,7 +318,7 @@ class ImmersiveSystem : System {
         pipelineDescriptor.fragmentFunction = fragmentFunction
         pipelineDescriptor.vertexDescriptor = mtlVertexDescriptor
 
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .rgba16Float
+        pipelineDescriptor.colorAttachments[0].pixelFormat = renderFormat
         pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
         pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
         pipelineDescriptor.colorAttachments[0].alphaBlendOperation = .add
@@ -354,36 +361,15 @@ class ImmersiveSystem : System {
         //print("texture!", CACurrentMediaTime(), resultTexture)
         
         objc_sync_enter(badAppleLock)
-        badAppleTexture[badAppleIdx] = resultTexture
-        //badAppleIdx = (badAppleIdx + 1) % 10
+        badAppleTexture = resultTexture
         objc_sync_exit(badAppleLock)
     }
 
+    var lastFrameFetch: Double = 0.0
     func update(context: SceneUpdateContext) {
         // RealityKit automatically calls this every frame for every scene.
         let plane = context.scene.findEntity(named: "video_plane") as? ModelEntity
         if let plane = plane {
-            //let resource = try AudioFileResource.load(named: "badapple,mp3", in: nil, inputMode: .nonSpatial, loadingStrategy: .preload, shouldLoop: true)
-            
-            if !playingAudio {
-                let audioSession = AVAudioSession.sharedInstance()
-                do {
-                    try audioSession.setActive(true)
-                    try audioSession.setCategory(.playAndRecord, options: [.mixWithOthers, .allowBluetoothA2DP, .allowAirPlay])
-                    try audioSession.setMode(.voiceChat)
-                    try audioSession.setPreferredOutputNumberOfChannels(2)
-                    try audioSession.setIntendedSpatialExperience(.bypassed)
-                } catch {
-                    print("Failed to set the audio session configuration?")
-                }
-        
-                let resource = try! AudioFileResource.load(contentsOf: Bundle.main.url(forResource: "badapple", withExtension: "mp3")!)
-
-                let audioController = plane.prepareAudio(resource)
-                audioController.play()
-                playingAudio = true
-            }
-
             //print("frame", plane.id)
             
             let transform = visionPro.transformMatrix()
@@ -395,11 +381,14 @@ class ImmersiveSystem : System {
             
             do {
                 let drawable = try drawableQueue?.nextDrawable()
+                if drawable == nil {
+                    return
+                }
                 
                 var scale = simd_float3(DummyMetalRenderer.renderTangents[0].x + DummyMetalRenderer.renderTangents[0].y, 1.0, DummyMetalRenderer.renderTangents[0].z + DummyMetalRenderer.renderTangents[0].w)
                 scale *= rk_panel_depth
-                var orientation = simd_quatf(transform) * simd_quatf(angle: 1.5708, axis: simd_float3(1,0,0))
-                var position = simd_float3(planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z)
+                let orientation = simd_quatf(transform) * simd_quatf(angle: 1.5708, axis: simd_float3(1,0,0))
+                let position = simd_float3(planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z)
                 
                 //print(String(format: "%.2f, %.2f, %.2f", planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z), CACurrentMediaTime() - lastUpdateTime)
                 lastUpdateTime = CACurrentMediaTime()
@@ -410,11 +399,27 @@ class ImmersiveSystem : System {
                 
                 video?.sampleRead = self.readVideoSample
                 
-                frameIdx += 1
-                //if frameIdx % 3 == 0 {
-                //    video?.sampleRead = self.readVideoSample
+                if lastSubmit == 0.0 {
+                    lastSubmit = CACurrentMediaTime() - visionPro.vsyncDelta
+                    lastFrameFetch = CACurrentMediaTime()
+                }
+                var delta = (CACurrentMediaTime() - lastFrameFetch) + deltaLeftovers
+                lastFrameFetch = CACurrentMediaTime()
+                //delta = 0.1
+                var readAFrame = false
+                var idx = 0
+                while delta >= visionPro.vsyncDelta { // TODO: should be media frame delta I think
+                    video?.readSamplesNext()
+                    //print("frame", delta, idx)
+                    frameIdx += 1
+                    delta -= visionPro.vsyncDelta;
+                    readAFrame = true
+                    idx += 1
+                }
+                if readAFrame {
                     video?.readSamplesManually()
-                //}
+                }
+                deltaLeftovers = delta
                 
                 objc_sync_enter(badAppleLock)
                 drawNextTexture(drawable: drawable!, simdDeviceAnchor: transform, plane: plane, position: position, orientation: orientation, scale: scale)
@@ -469,7 +474,7 @@ class ImmersiveSystem : System {
                                                    nearZ: renderZNear,
                                                    farZ: renderZFar,
                                                    reverseZ: true)
-            return Uniforms(projectionMatrix: .init(projection), modelViewMatrixFrame: viewMatrixFrame, modelViewMatrix: viewMatrix, tangents: tangents, which: UInt32(viewIndex))
+            return Uniforms(projectionMatrix: .init(projection), modelViewMatrixFrame: viewMatrixFrame, modelViewMatrix: viewMatrix, tangents: tangents, which: UInt32(viewIndex), renderWidth: Float(currentRenderWidth), renderHeight: Float(currentRenderHeight))
         }
         
         self.uniforms[0] = uniforms(forViewIndex: eyeIdx)
@@ -546,7 +551,8 @@ class ImmersiveSystem : System {
         renderEncoder.setFrontFacing(.counterClockwise)
         renderEncoder.setViewports([renderViewports[eyeIdx]])
         renderEncoder.setVertexBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
-        renderEncoder.setFragmentTexture(badAppleTexture[badAppleIdx], index: 0)
+        renderEncoder.setFragmentBuffer(dynamicUniformBuffer, offset:uniformBufferOffset, index: BufferIndex.uniforms.rawValue)
+        renderEncoder.setFragmentTexture(badAppleTexture, index: 0)
         
         /*if drawable.views.count > 1 {
             var viewMappings = (0..<drawable.views.count).map {
@@ -568,6 +574,7 @@ class ImmersiveSystem : System {
         renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         
         visionPro.lockPlaneAnchors()
+        
         
         // Render planes
         for plane in visionPro.planeAnchors {
@@ -592,7 +599,7 @@ class ImmersiveSystem : System {
         }
         
         // Render lines
-        for plane in visionPro.planeAnchors {
+        /*for plane in visionPro.planeAnchors {
             let plane = plane.value
             let faces = plane.geometry.meshFaces
             renderEncoder.setVertexBuffer(plane.geometry.meshVertices.buffer, offset: 0, index: VertexAttribute.position.rawValue)
@@ -611,7 +618,8 @@ class ImmersiveSystem : System {
                                                 indexType: faces.bytesPerIndex == 2 ? MTLIndexType.uint16 : MTLIndexType.uint32,
                                                 indexBuffer: faces.buffer,
                                                 indexBufferOffset: 0)
-        }
+        }*/
+        
         visionPro.unlockPlaneAnchors()
         
         renderEncoder.popDebugGroup()
@@ -619,6 +627,7 @@ class ImmersiveSystem : System {
     }
     
     var lastSubmit = 0.0
+    var lastLastSubmit = 0.0
     func drawNextTexture(drawable: TextureResource.Drawable, simdDeviceAnchor: simd_float4x4, plane: ModelEntity, position: simd_float3, orientation: simd_quatf, scale: simd_float3) {
     
         autoreleasepool {
@@ -630,22 +639,65 @@ class ImmersiveSystem : System {
                 renderOverlay(eyeIdx: i, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
             }
             
-            /*if let encoder = commandBuffer.makeBlitCommandEncoder() {
-                encoder.generateMipmaps(for: drawable.texture)
-                encoder.endEncoding()
-            }*/
+            if self.lastFbChangeTime == 0.0 {
+                self.lastFbChangeTime = CACurrentMediaTime()
+            }
             
             let submitTime = CACurrentMediaTime()
-            //print(submitTime, CACurrentMediaTime() - lastSubmit)
-            lastSubmit = submitTime
-            /*commandBuffer.addScheduledHandler { (_ commandBuffer)-> Swift.Void in
-                print("scheduled!", submitTime, CACurrentMediaTime() - submitTime)
-            }*/
-            /*commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
-                print("completed!", submitTime, CACurrentMediaTime() - submitTime)
+            
+            // Emergency resolution drop if we're chugging
+            if CACurrentMediaTime() - lastSubmit > 0.02 && lastSubmit - lastLastSubmit > 0.02 && CACurrentMediaTime() - lastFbChangeTime > 0.25 {
+                currentRenderScale -= 0.25
+                currentRenderWidth = Int(currentRenderScale * Double(renderWidth))
+                currentRenderHeight = Int(currentRenderScale * Double(renderHeight))
+            }
+            //print(CACurrentMediaTime() - lastSubmit)
+            
+            if lastRenderWidth != currentRenderWidth {
+                // Recreate framebuffer
+                let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
+                self.drawableQueue = try? TextureResource.DrawableQueue(desc)
+                self.textureResource!.replace(withDrawables: self.drawableQueue!)
                 
-                //drawable.presentOnSceneUpdate()
-            }*/
+                // Create depth texture
+                let depthTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float,
+                                                                                      width: currentRenderWidth,
+                                                                                      height: currentRenderHeight*2,
+                                                                                      mipmapped: false)
+                depthTextureDescriptor.usage = [.renderTarget, .shaderRead]
+                depthTextureDescriptor.storageMode = .private
+                self.depthTexture = device.makeTexture(descriptor: depthTextureDescriptor)!
+                
+                renderViewports[0] = MTLViewport(originX: 0, originY: Double(currentRenderHeight), width: Double(currentRenderWidth), height: Double(currentRenderHeight), znear: renderZNear, zfar: renderZFar)
+                renderViewports[1] = MTLViewport(originX: 0, originY: 0, width: Double(currentRenderWidth), height: Double(currentRenderHeight), znear: renderZNear, zfar: renderZFar)
+                self.lastFbChangeTime = CACurrentMediaTime()
+                
+                print("Resolution changed to:", currentRenderWidth, "x", currentRenderHeight, "(", currentRenderScale, ")")
+            }
+            lastRenderWidth = currentRenderWidth
+            lastRenderHeight = currentRenderHeight
+            lastLastSubmit = lastSubmit
+            lastSubmit = submitTime
+
+            commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
+                //print("completed!", submitTime, CACurrentMediaTime() - submitTime, self.currentRenderWidth)
+                
+                /*if CACurrentMediaTime() - submitTime < 0.007 && CACurrentMediaTime() - self.lastFbChangeTime > 3.0 && !self.lockOutRaising {
+                    //objc_sync_enter(self.badAppleLock)
+                    currentRenderScale += 0.125
+                    currentRenderWidth = Int(currentRenderScale * Double(renderWidth))
+                    currentRenderHeight = Int(currentRenderScale * Double(renderHeight))
+                    //objc_sync_exit(self.badAppleLock)
+                }
+                else if CACurrentMediaTime() - submitTime > 0.01 && CACurrentMediaTime() - self.lastFbChangeTime > 0.5 {
+                    //objc_sync_enter(self.badAppleLock)
+                    currentRenderScale -= 0.125
+                    currentRenderWidth = Int(currentRenderScale * Double(renderWidth))
+                    currentRenderHeight = Int(currentRenderScale * Double(renderHeight))
+                    //objc_sync_exit(self.badAppleLock)
+                    self.lockOutRaising = true
+                }*/
+            }
             
             plane.position = position
             plane.orientation = orientation
@@ -653,7 +705,7 @@ class ImmersiveSystem : System {
             
             commandBuffer.present(drawable)
             commandBuffer.commit()
-            commandBuffer.waitUntilCompleted()
+            commandBuffer.waitUntilCompleted() // this is a load-bearing wait
         }
     }
 }
