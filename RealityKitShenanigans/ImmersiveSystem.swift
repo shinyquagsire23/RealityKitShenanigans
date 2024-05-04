@@ -19,7 +19,7 @@ let maxBuffersInFlight = 3
 let maxPlanesDrawn = 1024
 let renderWidth = Int(1920)
 let renderHeight = Int(1840)
-let renderScale = 2.25
+let renderScale = 2.0
 let renderFormat = MTLPixelFormat.bgra8Unorm // rgba8Unorm, rgba8Unorm_srgb, bgra8Unorm, bgra8Unorm_srgb, rgba16Float
 let renderZNear = 0.001
 let renderZFar = 100.0
@@ -189,6 +189,7 @@ class ImmersiveSystem : System {
         //visionPro.createDisplayLink()
         let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
         self.drawableQueue = try? TextureResource.DrawableQueue(desc)
+        self.drawableQueue!.allowsNextDrawableTimeout = true
         
         let data = Data([0x00, 0x00, 0x00, 0xFF])
         self.textureResource = try! TextureResource(
@@ -385,10 +386,31 @@ class ImmersiveSystem : System {
                     return
                 }
                 
+                frameIdx += 1
+                let bufferIdx = frameIdx % 3
+                
+                
+                
                 var scale = simd_float3(DummyMetalRenderer.renderTangents[0].x + DummyMetalRenderer.renderTangents[0].y, 1.0, DummyMetalRenderer.renderTangents[0].z + DummyMetalRenderer.renderTangents[0].w)
+                scale *= 0.25
                 scale *= rk_panel_depth
+                
+                if bufferIdx == 0 {
+                    planeTransform.columns.3 += transform.columns.0 * rk_panel_depth * 0.75
+                    scale *= 1.0
+                }
+                else if bufferIdx == 1 {
+                    planeTransform.columns.3 += transform.columns.0 * rk_panel_depth * 0.0
+                    scale *= 0.75
+                }
+                else if bufferIdx == 2 {
+                    planeTransform.columns.3 -= transform.columns.0 * rk_panel_depth * 0.75
+                    scale *= 0.5
+                }
+                
                 let orientation = simd_quatf(transform) * simd_quatf(angle: 1.5708, axis: simd_float3(1,0,0))
                 let position = simd_float3(planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z)
+                
                 
                 //print(String(format: "%.2f, %.2f, %.2f", planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z), CACurrentMediaTime() - lastUpdateTime)
                 lastUpdateTime = CACurrentMediaTime()
@@ -411,7 +433,7 @@ class ImmersiveSystem : System {
                 while delta >= visionPro.vsyncDelta { // TODO: should be media frame delta I think
                     video?.readSamplesNext()
                     //print("frame", delta, idx)
-                    frameIdx += 1
+                    //frameIdx += 1
                     delta -= visionPro.vsyncDelta;
                     readAFrame = true
                     idx += 1
@@ -521,17 +543,28 @@ class ImmersiveSystem : System {
         return planeToColor2(plane: plane)
     }
     
-    func renderOverlay(eyeIdx: Int, colorTexture: MTLTexture, commandBuffer: MTLCommandBuffer, framePose: simd_float4x4, simdDeviceAnchor: simd_float4x4)
+    func renderOverlay(bufferIdx: Int, eyeIdx: Int, colorTexture: MTLTexture, commandBuffer: MTLCommandBuffer, framePose: simd_float4x4, simdDeviceAnchor: simd_float4x4)
     {
         self.updateDynamicBufferState(eyeIdx)
         self.updateGameStateForVideoFrame(eyeIdx, framePose: framePose, simdDeviceAnchor: simdDeviceAnchor)
+        
+        var clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0)
+        if bufferIdx == 0 {
+            clearColor = MTLClearColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0)
+        }
+        else if bufferIdx == 1 {
+            clearColor = MTLClearColor(red: 0.0, green: 1.0, blue: 0.0, alpha: 1.0)
+        }
+        else if bufferIdx == 2 {
+            clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 1.0, alpha: 1.0)
+        }
         
         // Toss out the depth buffer, keep colors
         let renderPassDescriptor = MTLRenderPassDescriptor()
         renderPassDescriptor.colorAttachments[0].texture = colorTexture
         renderPassDescriptor.colorAttachments[0].loadAction = eyeIdx == 0 ? .clear : .load
         renderPassDescriptor.colorAttachments[0].storeAction = .store
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0)
+        renderPassDescriptor.colorAttachments[0].clearColor = clearColor
         renderPassDescriptor.depthAttachment.texture = depthTexture
         renderPassDescriptor.depthAttachment.loadAction = eyeIdx == 0 ? .clear : .load
         renderPassDescriptor.depthAttachment.storeAction = .store
@@ -565,19 +598,19 @@ class ImmersiveSystem : System {
         renderEncoder.setRenderPipelineState(pipelineState)
         renderEncoder.setDepthStencilState(depthStateGreater)
         
-        self.planeUniforms[0].planeTransform = simdDeviceAnchor
+        /*self.planeUniforms[0].planeTransform = simdDeviceAnchor
         self.planeUniforms[0].planeColor = simd_float4(0.7, 0.7, 0.7, 1.0)
         self.planeUniforms[0].planeDoProximity = 0.0
         renderEncoder.setVertexBuffer(dynamicPlaneUniformBuffer, offset:planeUniformBufferOffset, index: BufferIndex.planeUniforms.rawValue)
         renderEncoder.setVertexBuffer(fullscreenQuadBuffer, offset: 0, index: VertexAttribute.position.rawValue)
         renderEncoder.setVertexBuffer(fullscreenQuadBuffer, offset: (3*4)*4, index: VertexAttribute.texcoord.rawValue)
-        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        renderEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)*/
         
         visionPro.lockPlaneAnchors()
         
         
         // Render planes
-        for plane in visionPro.planeAnchors {
+        /*for plane in visionPro.planeAnchors {
             let plane = plane.value
             let faces = plane.geometry.meshFaces
             renderEncoder.setVertexBuffer(plane.geometry.meshVertices.buffer, offset: 0, index: VertexAttribute.position.rawValue)
@@ -596,7 +629,7 @@ class ImmersiveSystem : System {
                                                 indexType: faces.bytesPerIndex == 2 ? MTLIndexType.uint16 : MTLIndexType.uint32,
                                                 indexBuffer: faces.buffer,
                                                 indexBufferOffset: 0)
-        }
+        }*/
         
         // Render lines
         /*for plane in visionPro.planeAnchors {
@@ -629,14 +662,15 @@ class ImmersiveSystem : System {
     var lastSubmit = 0.0
     var lastLastSubmit = 0.0
     func drawNextTexture(drawable: TextureResource.Drawable, simdDeviceAnchor: simd_float4x4, plane: ModelEntity, position: simd_float3, orientation: simd_quatf, scale: simd_float3) {
-    
+        let bufferIdx = frameIdx % 3
         autoreleasepool {
             guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+                print("aaaaaaaaaa")
                 return
             }
             
             for i in 0..<DummyMetalRenderer.renderViewTransforms.count {
-                renderOverlay(eyeIdx: i, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
+                renderOverlay(bufferIdx: bufferIdx, eyeIdx: i, colorTexture: drawable.texture, commandBuffer: commandBuffer, framePose: matrix_identity_float4x4, simdDeviceAnchor: simdDeviceAnchor)
             }
             
             if self.lastFbChangeTime == 0.0 {
@@ -646,17 +680,18 @@ class ImmersiveSystem : System {
             let submitTime = CACurrentMediaTime()
             
             // Emergency resolution drop if we're chugging
-            if CACurrentMediaTime() - lastSubmit > 0.02 && lastSubmit - lastLastSubmit > 0.02 && CACurrentMediaTime() - lastFbChangeTime > 0.25 {
+            /*if CACurrentMediaTime() - lastSubmit > 0.02 && lastSubmit - lastLastSubmit > 0.02 && CACurrentMediaTime() - lastFbChangeTime > 0.25 {
                 currentRenderScale -= 0.25
                 currentRenderWidth = Int(currentRenderScale * Double(renderWidth))
                 currentRenderHeight = Int(currentRenderScale * Double(renderHeight))
-            }
+            }*/
             //print(CACurrentMediaTime() - lastSubmit)
             
             if lastRenderWidth != currentRenderWidth {
                 // Recreate framebuffer
                 let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
                 self.drawableQueue = try? TextureResource.DrawableQueue(desc)
+                self.drawableQueue!.allowsNextDrawableTimeout = true
                 self.textureResource!.replace(withDrawables: self.drawableQueue!)
                 
                 // Create depth texture
@@ -697,6 +732,9 @@ class ImmersiveSystem : System {
                     //objc_sync_exit(self.badAppleLock)
                     self.lockOutRaising = true
                 }*/
+                
+                
+                //drawable.present()
             }
             
             plane.position = position
@@ -705,7 +743,9 @@ class ImmersiveSystem : System {
             
             commandBuffer.present(drawable)
             commandBuffer.commit()
-            commandBuffer.waitUntilCompleted() // this is a load-bearing wait
+            //commandBuffer.waitUntilCompleted() // this is a load-bearing wait
+            
+            Thread.sleep(forTimeInterval: 1.0)
         }
     }
 }
