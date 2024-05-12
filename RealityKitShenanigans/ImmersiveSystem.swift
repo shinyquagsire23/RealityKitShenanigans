@@ -18,8 +18,8 @@ let alignedPlaneUniformSize = (MemoryLayout<PlaneUniform>.size + 0xFF) & -0x100
 let maxBuffersInFlight = 3
 let maxPlanesDrawn = 1024
 let renderWidth = Int(1920)
-let renderHeight = Int(1840)
-let renderScale = 2.25
+let renderHeight = Int(1824)
+let renderScale = 2.5
 let renderFormat = MTLPixelFormat.bgra8Unorm // rgba8Unorm, rgba8Unorm_srgb, bgra8Unorm, bgra8Unorm_srgb, rgba16Float
 let renderZNear = 0.001
 let renderZFar = 100.0
@@ -423,6 +423,7 @@ class ImmersiveSystem : System {
                 
                 objc_sync_enter(badAppleLock)
                 drawNextTexture(drawable: drawable!, simdDeviceAnchor: transform, plane: plane, position: position, orientation: orientation, scale: scale)
+                drawable!.presentOnSceneUpdate()
                 objc_sync_exit(badAppleLock)
             }
             catch {
@@ -703,7 +704,6 @@ class ImmersiveSystem : System {
             plane.orientation = orientation
             plane.scale = scale
             
-            commandBuffer.present(drawable)
             commandBuffer.commit()
             commandBuffer.waitUntilCompleted() // this is a load-bearing wait
         }
