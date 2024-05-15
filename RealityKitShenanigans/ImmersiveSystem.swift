@@ -17,9 +17,11 @@ let alignedUniformsSize = (MemoryLayout<Uniforms>.size + 0xFF) & -0x100
 let alignedPlaneUniformSize = (MemoryLayout<PlaneUniform>.size + 0xFF) & -0x100
 let maxBuffersInFlight = 3
 let maxPlanesDrawn = 1024
-let renderWidth = Int(1920)
-let renderHeight = Int(1824)
-let renderScale = 2.5
+let renderWidthReal = Int(1920)
+let renderHeightReal = Int(1824)
+let renderWidth = Int(renderWidthReal+256+32+8+2) // each eye is slightly spaced apart, 256px x 80px at 1x. Not sure how to calculate this.
+let renderHeight = Int(renderHeightReal+80+4)
+let renderScale = 2.25
 let renderFormat = MTLPixelFormat.bgra8Unorm // rgba8Unorm, rgba8Unorm_srgb, bgra8Unorm, bgra8Unorm_srgb, rgba16Float
 let renderZNear = 0.001
 let renderZFar = 100.0
@@ -187,7 +189,7 @@ class ImmersiveSystem : System {
     
     required init(scene: RealityKit.Scene) {
         //visionPro.createDisplayLink()
-        let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
+        let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget], mipmapsMode: .none)
         self.drawableQueue = try? TextureResource.DrawableQueue(desc)
         
         let data = Data([0x00, 0x00, 0x00, 0xFF])
@@ -647,16 +649,16 @@ class ImmersiveSystem : System {
             let submitTime = CACurrentMediaTime()
             
             // Emergency resolution drop if we're chugging
-            if CACurrentMediaTime() - lastSubmit > 0.02 && lastSubmit - lastLastSubmit > 0.02 && CACurrentMediaTime() - lastFbChangeTime > 0.25 {
+            /*if CACurrentMediaTime() - lastSubmit > 0.02 && lastSubmit - lastLastSubmit > 0.02 && CACurrentMediaTime() - lastFbChangeTime > 0.25 {
                 currentRenderScale -= 0.25
                 currentRenderWidth = Int(currentRenderScale * Double(renderWidth))
                 currentRenderHeight = Int(currentRenderScale * Double(renderHeight))
-            }
+            }*/
             //print(CACurrentMediaTime() - lastSubmit)
             
             if lastRenderWidth != currentRenderWidth {
                 // Recreate framebuffer
-                let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget, .shaderRead, .shaderWrite], mipmapsMode: .none)
+                let desc = TextureResource.DrawableQueue.Descriptor(pixelFormat: renderFormat, width: currentRenderWidth, height: currentRenderHeight*2, usage: [.renderTarget], mipmapsMode: .none)
                 self.drawableQueue = try? TextureResource.DrawableQueue(desc)
                 self.textureResource!.replace(withDrawables: self.drawableQueue!)
                 

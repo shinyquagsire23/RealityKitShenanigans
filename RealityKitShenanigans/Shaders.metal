@@ -70,13 +70,26 @@ fragment float4 fragmentShader(ColorInOutPlane in [[stage_in]],
     float4 texSample = in_tex.sample(colorSampler, sampleCoord);
 
     float4 color = in.color;
-    /*if (color.a <= 0.0) {
-        discard_fragment();
-        return float4(0.0, 0.0, 0.0, 0.0);
-    }*/
-    //color.rgb = texSample.rgb;
-    //color.rg = sampleCoord;
     color.a = texSample.r > 0.2 ? 1.0 : 0.0;
+    
+    // Render a 1px or 2px grid
+    /*const int shift = 1;
+    if ((((int)in.position.y) >> shift) & 1) {
+        if ((((int)in.position.x) >> shift) & 1) {
+            color = float4(0.0, 0.0, 0.0, 1.0);
+        }
+        else {
+            color = float4(1.0, 1.0, 1.0, 1.0);
+        }
+    }
+    else {
+        if ((((int)in.position.x) >> shift) & 1) {
+            color = float4(1.0, 1.0, 1.0, 1.0);
+        }
+        else {
+            color = float4(0.0, 0.0, 0.0, 1.0);
+        }
+    }*/
     return color;
 }
 
